@@ -148,7 +148,7 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4. EXPORT TO EXCEL API
+// 4. EXPORT TO EXCEL API (UPDATED HEIGHT & WIDTH)
 app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   try {
     const { orderIds } = req.body;
@@ -172,9 +172,10 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
-      { header: 'Order Number', key: 'order_number', width: 25 },
-      { header: 'Order Screenshots', key: 'order_ss', width: 50 }, 
-      { header: 'Review Screenshots', key: 'review_ss', width: 50 }, 
+      { header: 'Order Number', key: 'order_number', width: 20 },
+      // কলামের প্রস্থ (width) 50 থেকে কমিয়ে 40 করা হয়েছে যাতে ফাঁকা জায়গা কম থাকে
+      { header: 'Order Screenshots', key: 'order_ss', width: 30 }, 
+      { header: 'Review Screenshots', key: 'review_ss', width: 30 }, 
       { header: 'Current Price', key: 'price', width: 15 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
@@ -194,7 +195,9 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
         price: `$${priceToDisplay}`,
         paypal: order.paypal_email
       });
-      worksheet.getRow(currentRowIndex).height = 130;
+      
+      // সারির উচ্চতা (Row Height) 130 থেকে বাড়িয়ে 170 করা হয়েছে
+      worksheet.getRow(currentRowIndex).height = 170;
 
       const imagePlacements = [
         { url: order.order_screenshot_1, colIndex: 3, offsetCol: 0.02 }, 
@@ -210,7 +213,8 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
               tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.1 }, 
-              ext: { width: 140, height: 110 },
+              // ইমেজের সাইজ 140x110 থেকে পরিবর্তন করে 135x155 করা হয়েছে (লম্বায় বড়)
+              ext: { width: 135, height: 155 },
               editAs: 'oneCell' 
             });
           }
@@ -298,7 +302,7 @@ app.get('/api/orders', verifyAdmin, async (req, res) => {
   }
 });
 
-// 8.5 UPDATE ORDER DETAILS (NEW API)
+// 8.5 UPDATE ORDER DETAILS
 app.put('/api/orders/:id', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
