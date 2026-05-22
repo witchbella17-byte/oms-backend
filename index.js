@@ -187,7 +187,7 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
 });
 
 // ==========================================
-// 4. EXPORT TO EXCEL API 
+// 4. EXPORT TO EXCEL API (UPDATED: 2 Columns, Side-by-Side Images, No Links)
 // ==========================================
 app.get('/api/orders/export', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
@@ -211,13 +211,12 @@ app.get('/api/orders/export', verifyAdmin, async (req, res) => {
     const workbook = new excelJS.Workbook();
     const worksheet = workbook.addWorksheet('Submitted Reviews');
 
+    // কলাম সেটআপ (ইমেজের জন্য মাত্র ২টি চওড়া কলাম রাখা হয়েছে)
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
       { header: 'Order Number', key: 'order_number', width: 25 },
-      { header: 'Order SS 1', key: 'order_ss_1', width: 25 }, 
-      { header: 'Order SS 2', key: 'order_ss_2', width: 25 }, 
-      { header: 'Review SS 1', key: 'review_ss_1', width: 25 }, 
-      { header: 'Review SS 2', key: 'review_ss_2', width: 25 }, 
+      { header: 'Order Screenshots', key: 'order_ss', width: 45 },  // কলাম ৩: অর্ডার ইমেজ
+      { header: 'Review Screenshots', key: 'review_ss', width: 45 }, // কলাম ৪: রিভিউ ইমেজ
       { header: 'Product Price', key: 'price', width: 15 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
@@ -229,6 +228,7 @@ app.get('/api/orders/export', verifyAdmin, async (req, res) => {
       orderIds.push(order.id);
 
       const currentRowIndex = i + 2; 
+      // এখানে রো তৈরি করা হচ্ছে, কোনো ইমেজের 'লিংক' টেক্সট হিসেবে দেওয়া হচ্ছে না
       worksheet.addRow({
         date: new Date(order.created_at).toLocaleDateString(),
         order_number: order.order_number,
@@ -236,30 +236,15 @@ app.get('/api/orders/export', verifyAdmin, async (req, res) => {
         paypal: order.paypal_email
       });
 
-      worksheet.getRow(currentRowIndex).height = 120;
+      // ইমেজের জায়গা দেওয়ার জন্য রো-এর উচ্চতা ১৩০ করা হয়েছে
+      worksheet.getRow(currentRowIndex).height = 130;
 
-      const setupHyperlinkCell = (colIndex, url) => {
-        if (!url) return;
-        const cell = worksheet.getRow(currentRowIndex).getCell(colIndex);
-        cell.value = {
-          text: '🔍 Click to View Full', 
-          hyperlink: url,
-          tooltip: 'Click to open full image in browser'
-        };
-        cell.alignment = { vertical: 'bottom', horizontal: 'center' };
-        cell.font = { color: { argb: 'FF0000FF' }, underline: true, size: 9 };
-      };
-
-      setupHyperlinkCell(3, order.order_screenshot_1);
-      setupHyperlinkCell(4, order.order_screenshot_2);
-      setupHyperlinkCell(5, order.review_screenshot_1);
-      setupHyperlinkCell(6, order.review_screenshot_2);
-
+      // ছবিগুলো পাশাপাশি বসানোর লজিক (একই কলামের ভেতর)
       const imagePlacements = [
-        { url: order.order_screenshot_1, colIndex: 3 }, 
-        { url: order.order_screenshot_2, colIndex: 4 }, 
-        { url: order.review_screenshot_1, colIndex: 5 },
-        { url: order.review_screenshot_2, colIndex: 6 }
+        { url: order.order_screenshot_1, colIndex: 3, offsetX: 0.1 },   // Order SS 1 (বামে)
+        { url: order.order_screenshot_2, colIndex: 3, offsetX: 3.5 },   // Order SS 2 (ডানে)
+        { url: order.review_screenshot_1, colIndex: 4, offsetX: 0.1 },  // Review SS 1 (বামে)
+        { url: order.review_screenshot_2, colIndex: 4, offsetX: 3.5 }   // Review SS 2 (ডানে)
       ];
 
       for (const img of imagePlacements) {
@@ -268,8 +253,8 @@ app.get('/api/orders/export', verifyAdmin, async (req, res) => {
           if (imgData) {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
-              tl: { col: img.colIndex - 1 + 0.1, row: currentRowIndex - 1 + 0.05 }, 
-              ext: { width: 140, height: 95 },
+              tl: { col: img.colIndex - 1 + img.offsetX, row: currentRowIndex - 1 + 0.1 }, 
+              ext: { width: 150, height: 110 },
               editAs: 'oneCell' 
             });
           }
