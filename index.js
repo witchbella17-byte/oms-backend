@@ -3,7 +3,6 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
 const excelJS = require('exceljs');
-const jwt = require('jsonwebtoken');
 
 dotenv.config();
 const app = express();
@@ -14,14 +13,12 @@ app.use(express.json());
 // লাইভ ডাটাবেস (Supabase) কানেকশন পুল
 const pool = new Pool({
   connectionString: process.env.PG_URI,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  ssl: { rejectUnauthorized: false }
 });
 
-// ডাটাবেস টেবিল ইনিশিয়ালাইজেশন
+// ডাটাবেস টেবিল ইনিশিয়ালাইজেশন এবং Auto-Update
 pool.connect()
-  .then(() => {
+  .then(async (client) => {
     console.log('PostgreSQL successfully connected!');
     const createTablesQuery = `
       CREATE TABLE IF NOT EXISTS products (
@@ -48,74 +45,66 @@ pool.connect()
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `;
-    return pool.query(createTablesQuery);
+    await client.query(createTablesQuery);
+    
+    // Auto add 'current_price' column if it doesn't exist
+    try {
+      await client.query(`ALTER TABLE orders ADD COLUMN current_price NUMERIC(10, 2) DEFAULT 0.00;`);
+      console.log("Added current_price column to orders table.");
+    } catch (e) {
+      // Column already exists
+    }
+    client.release();
+    console.log('Production Database tables are ready!');
   })
-  .then(() => console.log('Production Database tables are ready!'))
   .catch((err) => console.error('Database Connection Error:', err.message));
 
 
-// URL থেকে ইমেজ ডাউনলোড করে Buffer-এ রূপান্তর করার হেল্পার ফাংশন
 async function fetchImageBuffer(url) {
   try {
     if (!url) return null;
     const response = await fetch(url);
     if (!response.ok) return null;
-    
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    
     const contentType = response.headers.get('content-type');
     let extension = 'png'; 
-    if (contentType && contentType.includes('jpeg')) extension = 'jpeg';
-    if (contentType && contentType.includes('jpg')) extension = 'jpeg';
+    if (contentType && (contentType.includes('jpeg') || contentType.includes('jpg'))) extension = 'jpeg';
     if (contentType && contentType.includes('gif')) extension = 'gif';
     if (contentType && contentType.includes('webp')) extension = 'webp';
-    
     return { buffer, extension };
   } catch (err) {
-    console.error(`Failed to download image from ${url}:`, err.message);
+    console.error(`Failed to download image:`, err.message);
     return null;
   }
 }
 
-// ==========================================
-// Middleware: Verify Admin Token (Firebase Auth integration will handle this)
-// ==========================================
 const verifyAdmin = (req, res, next) => {
-  // যেহেতু আমরা এখন সরাসরি Google Auth ব্যবহার করছি, এখানে টোকেন ভেরিফিকেশন লজিক সিম্পল রাখা হলো
-  const token = req.headers.authorization?.split(' ')[1]; 
-  if (!token) return res.status(401).json({ success: false, message: 'Access Denied.' });
-  next(); // আপাতত সব রিকোয়েস্ট এলাউ করছি, সিকিউরিটি ফ্রন্টএন্ডে Firebase Auth দিয়ে হ্যান্ডেল হচ্ছে
+  next(); 
 };
 
-// ==========================================
 // 1. ADD NEW PRODUCT API
-// ==========================================
 app.post('/api/products', verifyAdmin, async (req, res) => {
   try {
     const { product_image, product_link, keyword, store_name, product_price, order_qty } = req.body;
     const status = order_qty > 0 ? 'available' : 'not_available';
-
     const newProduct = await pool.query(
       `INSERT INTO products (product_image, product_link, keyword, store_name, product_price, order_qty, status) 
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [product_image, product_link, keyword, store_name, product_price, order_qty, status]
     );
-
     res.status(201).json({ success: true, message: 'Product added!', product: newProduct.rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 });
 
-// ==========================================
-// 2. SUBMIT NEW ORDER API
-// ==========================================
+// 2. SUBMIT NEW ORDER API (UPDATED with current_price)
 app.post('/api/orders', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email } = req.body;
+    const { product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price } = req.body;
 
     const productCheck = await client.query('SELECT order_qty FROM products WHERE id = $1', [product_id]);
     if (productCheck.rows.length === 0 || productCheck.rows[0].order_qty <= 0) {
@@ -123,9 +112,9 @@ app.post('/api/orders', verifyAdmin, async (req, res) => {
     }
 
     const newOrder = await client.query(
-      `INSERT INTO orders (product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, status) 
-       VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING *`,
-      [product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email]
+      `INSERT INTO orders (product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, status, current_price) 
+       VALUES ($1, $2, $3, $4, $5, 'pending', $6) RETURNING *`,
+      [product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price]
     );
 
     await client.query(
@@ -137,7 +126,7 @@ app.post('/api/orders', verifyAdmin, async (req, res) => {
     );
 
     await client.query('COMMIT');
-    res.status(201).json({ success: true, message: 'Order submitted successfully!', order: newOrder.rows[0] });
+    res.status(201).json({ success: true, message: 'Order submitted!', order: newOrder.rows[0] });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(400).json({ success: false, message: err.message });
@@ -146,21 +135,16 @@ app.post('/api/orders', verifyAdmin, async (req, res) => {
   }
 });
 
-// ==========================================
 // 3. SUBMIT REVIEW API
-// ==========================================
 app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { review_screenshot_1, review_screenshot_2 } = req.body;
-
     const updatedOrder = await pool.query(
-      `UPDATE orders 
-       SET review_screenshot_1 = $1, review_screenshot_2 = $2, status = 'review_submitted' 
+      `UPDATE orders SET review_screenshot_1 = $1, review_screenshot_2 = $2, status = 'review_submitted' 
        WHERE id = $3 RETURNING *`,
       [review_screenshot_1, review_screenshot_2, id]
     );
-
     if (updatedOrder.rows.length === 0) return res.status(404).json({ success: false, message: 'Order not found' });
     res.status(200).json({ success: true, message: 'Review submitted!', order: updatedOrder.rows[0] });
   } catch (err) {
@@ -168,26 +152,25 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   }
 });
 
-// ==========================================
-// 4. EXPORT TO EXCEL API
-// ==========================================
-app.get('/api/orders/export', verifyAdmin, async (req, res) => {
-  const client = await pool.connect();
+// 4. EXPORT TO EXCEL API (UPDATED to POST, accepts orderIds, does NOT change status)
+app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   try {
-    await client.query('BEGIN');
+    const { orderIds } = req.body;
+    if (!orderIds || orderIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No orders selected.' });
+    }
 
-    const ordersToExport = await client.query(
+    const ordersToExport = await pool.query(
       `SELECT o.id, o.order_number, o.order_screenshot_1, o.order_screenshot_2, 
               o.review_screenshot_1, o.review_screenshot_2, o.paypal_email, 
-              o.created_at, p.product_price 
+              o.created_at, o.current_price, p.product_price 
        FROM orders o
        JOIN products p ON o.product_id = p.id
-       WHERE o.status = 'review_submitted'`
+       WHERE o.id = ANY($1::int[])`, [orderIds]
     );
 
     if (ordersToExport.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: 'No new reviews to export.' });
+      return res.status(404).json({ success: false, message: 'Orders not found.' });
     }
 
     const workbook = new excelJS.Workbook();
@@ -198,24 +181,22 @@ app.get('/api/orders/export', verifyAdmin, async (req, res) => {
       { header: 'Order Number', key: 'order_number', width: 25 },
       { header: 'Order Screenshots', key: 'order_ss', width: 45 },
       { header: 'Review Screenshots', key: 'review_ss', width: 45 },
-      { header: 'Product Price', key: 'price', width: 15 },
+      { header: 'Current Price', key: 'price', width: 15 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
 
-    const orderIds = [];
-    
     for (let i = 0; i < ordersToExport.rows.length; i++) {
       const order = ordersToExport.rows[i];
-      orderIds.push(order.id);
-
       const currentRowIndex = i + 2; 
+      
+      const priceToDisplay = order.current_price !== null ? order.current_price : order.product_price;
+
       worksheet.addRow({
         date: new Date(order.created_at).toLocaleDateString(),
         order_number: order.order_number,
-        price: `$${order.product_price}`,
+        price: `$${priceToDisplay}`,
         paypal: order.paypal_email
       });
-
       worksheet.getRow(currentRowIndex).height = 130;
 
       const imagePlacements = [
@@ -240,26 +221,32 @@ app.get('/api/orders/export', verifyAdmin, async (req, res) => {
       }
     }
 
-    await client.query(`UPDATE orders SET status = 'completed' WHERE id = ANY($1::int[])`, [orderIds]);
-    await client.query('COMMIT');
-
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename=' + `Reviews_Report_${Date.now()}.xlsx`);
+    res.setHeader('Content-Disposition', 'attachment; filename=' + `Reviews_Export_${Date.now()}.xlsx`);
     await workbook.xlsx.write(res);
     res.status(200).end();
 
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('Export Error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to export excel.' });
-  } finally {
-    client.release();
   }
 });
 
-// ==========================================
-// 5. GET ALL PRODUCTS API
-// ==========================================
+// 4.5 MARK AS DONE API (NEW)
+app.put('/api/orders/mark-done', verifyAdmin, async (req, res) => {
+  try {
+    const { orderIds } = req.body;
+    if (!orderIds || orderIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No orders selected.' });
+    }
+    await pool.query(`UPDATE orders SET status = 'completed' WHERE id = ANY($1::int[])`, [orderIds]);
+    res.status(200).json({ success: true, message: 'Orders marked as completed!' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
+// 5. GET ALL PRODUCTS
 app.get('/api/products', verifyAdmin, async (req, res) => {
   try {
     const products = await pool.query('SELECT * FROM products ORDER BY id DESC');
@@ -269,84 +256,56 @@ app.get('/api/products', verifyAdmin, async (req, res) => {
   }
 });
 
-// ==========================================
-// 6. UPDATE PRODUCT API
-// ==========================================
+// 6. UPDATE PRODUCT
 app.put('/api/products/:id', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { product_image, product_link, keyword, store_name, product_price, order_qty } = req.body;
     const status = order_qty > 0 ? 'available' : 'not_available';
-
     const updatedProduct = await pool.query(
-      `UPDATE products 
-       SET product_image = $1, product_link = $2, keyword = $3, store_name = $4, product_price = $5, order_qty = $6, status = $7 
-       WHERE id = $8 RETURNING *`,
+      `UPDATE products SET product_image=$1, product_link=$2, keyword=$3, store_name=$4, product_price=$5, order_qty=$6, status=$7 WHERE id=$8 RETURNING *`,
       [product_image, product_link, keyword, store_name, product_price, order_qty, status, id]
     );
-
-    if (updatedProduct.rows.length === 0) return res.status(404).json({ success: false, message: 'Product not found' });
-    res.status(200).json({ success: true, message: 'Product updated!', product: updatedProduct.rows[0] });
+    res.status(200).json({ success: true, product: updatedProduct.rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 });
 
-// ==========================================
-// 7. DELETE PRODUCT API
-// ==========================================
+// 7. DELETE PRODUCT
 app.delete('/api/products/:id', verifyAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
-    const deletedProduct = await pool.query('DELETE FROM products WHERE id = $1 RETURNING *', [id]);
-    if (deletedProduct.rows.length === 0) return res.status(404).json({ success: false, message: 'Product not found' });
-    res.status(200).json({ success: true, message: 'Product deleted successfully!' });
+    await pool.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+    res.status(200).json({ success: true, message: 'Product deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 });
 
-// ==========================================
-// 8. GET ALL ORDERS API
-// ==========================================
+// 8. GET ALL ORDERS
 app.get('/api/orders', verifyAdmin, async (req, res) => {
   try {
-    const { status } = req.query;
-    let query = 'SELECT * FROM orders ORDER BY created_at DESC';
-    let values = [];
-
-    if (status) {
-      query = 'SELECT * FROM orders WHERE status = $1 ORDER BY created_at DESC';
-      values = [status];
-    }
-
-    const orders = await pool.query(query, values);
+    const orders = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
     res.status(200).json({ success: true, orders: orders.rows });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server Error' });
   }
 });
 
-// ==========================================
-// 9. DELETE ORDER API
-// ==========================================
+// 9. DELETE ORDER
 app.delete('/api/orders/:id', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { id } = req.params;
-
     const order = await client.query('SELECT product_id, status FROM orders WHERE id = $1', [id]);
     if (order.rows.length === 0) throw new Error('Order not found');
-
     await client.query('DELETE FROM orders WHERE id = $1', [id]);
-    
     if (order.rows[0].status !== 'completed') {
       await client.query(`UPDATE products SET order_qty = order_qty + 1, status = 'available' WHERE id = $1`, [order.rows[0].product_id]);
     }
-
     await client.query('COMMIT');
-    res.status(200).json({ success: true, message: 'Order deleted successfully!' });
+    res.status(200).json({ success: true });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ success: false, message: err.message });
@@ -355,10 +314,5 @@ app.delete('/api/orders/:id', verifyAdmin, async (req, res) => {
   }
 });
 
-// ==========================================
-// SERVER INITIALIZATION
-// ==========================================
-app.get('/', (req, res) => res.send('Secure Order Management API is live!'));
-
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Secure Server is running on port: ${PORT}`));
+app.get('/', (req, res) => res.send('Secure OMS API is live!'));
+app.listen(process.env.PORT || 5000, () => console.log(`Server running`));
