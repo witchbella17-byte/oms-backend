@@ -45,15 +45,8 @@ pool.connect()
     `;
     await client.query(createTablesQuery);
     
-    try {
-      await client.query(`ALTER TABLE orders ADD COLUMN current_price NUMERIC(10, 2) DEFAULT 0.00;`);
-    } catch (e) {}
-    
-    // NEW: Auto add 'order_date' column
-    try {
-      await client.query(`ALTER TABLE orders ADD COLUMN order_date DATE;`);
-      console.log("Added order_date column to orders table.");
-    } catch (e) {}
+    try { await client.query(`ALTER TABLE orders ADD COLUMN current_price NUMERIC(10, 2) DEFAULT 0.00;`); } catch (e) {}
+    try { await client.query(`ALTER TABLE orders ADD COLUMN order_date DATE;`); } catch (e) {}
 
     client.release();
     console.log('Production Database tables are ready!');
@@ -100,7 +93,7 @@ app.post('/api/products', verifyAdmin, async (req, res) => {
   }
 });
 
-// 2. SUBMIT NEW ORDER API (UPDATED with order_date)
+// 2. SUBMIT NEW ORDER API
 app.post('/api/orders', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
@@ -155,7 +148,7 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4. EXPORT TO EXCEL API (UPDATED for order_date and auto #)
+// 4. EXPORT TO EXCEL API
 app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   try {
     const { orderIds } = req.body;
@@ -179,10 +172,10 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
-      { header: 'Order Number', key: 'order_number', width: 18 },
-      { header: 'Order Screenshots', key: 'order_ss', width: 25 }, 
-      { header: 'Review Screenshots', key: 'review_ss', width: 25 }, 
-      { header: 'Current Price', key: 'price', width: 9 },
+      { header: 'Order Number', key: 'order_number', width: 25 },
+      { header: 'Order Screenshots', key: 'order_ss', width: 50 }, 
+      { header: 'Review Screenshots', key: 'review_ss', width: 50 }, 
+      { header: 'Current Price', key: 'price', width: 15 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
 
@@ -191,10 +184,8 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
       const currentRowIndex = i + 2; 
       
       const priceToDisplay = order.current_price !== null ? order.current_price : order.product_price;
-      
-      // Auto formatting date and Hash
       const displayDate = order.order_date ? new Date(order.order_date).toLocaleDateString() : new Date(order.created_at).toLocaleDateString();
-      const cleanOrderNumber = order.order_number.replace(/^#+/, ''); // Removes any existing hashes to prevent ##
+      const cleanOrderNumber = order.order_number.replace(/^#+/, ''); 
       const finalOrderNumber = `#${cleanOrderNumber}`;
 
       worksheet.addRow({
@@ -219,7 +210,7 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
               tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.1 }, 
-              ext: { width: 85, height: 70 },
+              ext: { width: 140, height: 110 },
               editAs: 'oneCell' 
             });
           }
@@ -302,6 +293,26 @@ app.get('/api/orders', verifyAdmin, async (req, res) => {
   try {
     const orders = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
     res.status(200).json({ success: true, orders: orders.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
+// 8.5 UPDATE ORDER DETAILS (NEW API)
+app.put('/api/orders/:id', verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { order_number, paypal_email, current_price, order_date, order_screenshot_1, order_screenshot_2 } = req.body;
+    
+    const updatedOrder = await pool.query(
+      `UPDATE orders 
+       SET order_number=$1, paypal_email=$2, current_price=$3, order_date=$4, order_screenshot_1=$5, order_screenshot_2=$6 
+       WHERE id=$7 RETURNING *`,
+      [order_number, paypal_email, current_price, order_date, order_screenshot_1, order_screenshot_2, id]
+    );
+    
+    if (updatedOrder.rows.length === 0) return res.status(404).json({ success: false, message: 'Order not found' });
+    res.status(200).json({ success: true, message: 'Order updated successfully!', order: updatedOrder.rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server Error' });
   }
