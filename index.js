@@ -219,7 +219,7 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
               tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.1 }, 
-              ext: { width: 140, height: 110 },
+              ext: { width: 85, height: 70 },
               editAs: 'oneCell' 
             });
           }
