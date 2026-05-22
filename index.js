@@ -10,13 +10,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// লাইভ ডাটাবেস (Supabase) কানেকশন পুল
 const pool = new Pool({
   connectionString: process.env.PG_URI,
   ssl: { rejectUnauthorized: false }
 });
 
-// ডাটাবেস টেবিল ইনিশিয়ালাইজেশন এবং Auto-Update
 pool.connect()
   .then(async (client) => {
     console.log('PostgreSQL successfully connected!');
@@ -47,13 +45,10 @@ pool.connect()
     `;
     await client.query(createTablesQuery);
     
-    // Auto add 'current_price' column if it doesn't exist
     try {
       await client.query(`ALTER TABLE orders ADD COLUMN current_price NUMERIC(10, 2) DEFAULT 0.00;`);
       console.log("Added current_price column to orders table.");
-    } catch (e) {
-      // Column already exists
-    }
+    } catch (e) {}
     client.release();
     console.log('Production Database tables are ready!');
   })
@@ -99,7 +94,7 @@ app.post('/api/products', verifyAdmin, async (req, res) => {
   }
 });
 
-// 2. SUBMIT NEW ORDER API (UPDATED with current_price)
+// 2. SUBMIT NEW ORDER API
 app.post('/api/orders', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
@@ -152,7 +147,7 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4. EXPORT TO EXCEL API (UPDATED to POST, accepts orderIds, does NOT change status)
+// 4. EXPORT TO EXCEL API (FIXED IMAGE OVERLAPPING)
 app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   try {
     const { orderIds } = req.body;
@@ -169,9 +164,7 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
        WHERE o.id = ANY($1::int[])`, [orderIds]
     );
 
-    if (ordersToExport.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Orders not found.' });
-    }
+    if (ordersToExport.rows.length === 0) return res.status(404).json({ success: false, message: 'Orders not found.' });
 
     const workbook = new excelJS.Workbook();
     const worksheet = workbook.addWorksheet('Submitted Reviews');
@@ -179,8 +172,8 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
       { header: 'Order Number', key: 'order_number', width: 25 },
-      { header: 'Order Screenshots', key: 'order_ss', width: 45 },
-      { header: 'Review Screenshots', key: 'review_ss', width: 45 },
+      { header: 'Order Screenshots', key: 'order_ss', width: 50 }, // Width increased
+      { header: 'Review Screenshots', key: 'review_ss', width: 50 }, // Width increased
       { header: 'Current Price', key: 'price', width: 15 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
@@ -199,11 +192,12 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
       });
       worksheet.getRow(currentRowIndex).height = 130;
 
+      // FIXED: offsetCol is now fractional to stay inside the same cell
       const imagePlacements = [
-        { url: order.order_screenshot_1, colIndex: 3, offsetX: 0.1 },
-        { url: order.order_screenshot_2, colIndex: 3, offsetX: 3.5 },
-        { url: order.review_screenshot_1, colIndex: 4, offsetX: 0.1 },
-        { url: order.review_screenshot_2, colIndex: 4, offsetX: 3.5 }
+        { url: order.order_screenshot_1, colIndex: 3, offsetCol: 0.02 }, // Left side of the cell
+        { url: order.order_screenshot_2, colIndex: 3, offsetCol: 0.52 }, // Right side of the cell
+        { url: order.review_screenshot_1, colIndex: 4, offsetCol: 0.02 },
+        { url: order.review_screenshot_2, colIndex: 4, offsetCol: 0.52 }
       ];
 
       for (const img of imagePlacements) {
@@ -212,8 +206,8 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
           if (imgData) {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
-              tl: { col: img.colIndex - 1 + img.offsetX, row: currentRowIndex - 1 + 0.1 }, 
-              ext: { width: 150, height: 110 },
+              tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.1 }, 
+              ext: { width: 140, height: 110 }, // Image width adjusted to fit side-by-side
               editAs: 'oneCell' 
             });
           }
@@ -232,15 +226,24 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4.5 MARK AS DONE API (NEW)
+// 4.5 MARK AS DONE API 
 app.put('/api/orders/mark-done', verifyAdmin, async (req, res) => {
   try {
     const { orderIds } = req.body;
-    if (!orderIds || orderIds.length === 0) {
-      return res.status(400).json({ success: false, message: 'No orders selected.' });
-    }
+    if (!orderIds || orderIds.length === 0) return res.status(400).json({ success: false, message: 'No orders selected.' });
     await pool.query(`UPDATE orders SET status = 'completed' WHERE id = ANY($1::int[])`, [orderIds]);
     res.status(200).json({ success: true, message: 'Orders marked as completed!' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
+// 4.6 UNDO ORDER API (NEW)
+app.put('/api/orders/:id/undo', verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(`UPDATE orders SET status = 'review_submitted' WHERE id = $1`, [id]);
+    res.status(200).json({ success: true, message: 'Order status reverted to ready!' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server Error' });
   }
