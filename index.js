@@ -179,10 +179,10 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
-      { header: 'Order Number', key: 'order_number', width: 25 },
-      { header: 'Order Screenshots', key: 'order_ss', width: 50 }, 
-      { header: 'Review Screenshots', key: 'review_ss', width: 50 }, 
-      { header: 'Current Price', key: 'price', width: 15 },
+      { header: 'Order Number', key: 'order_number', width: 18 },
+      { header: 'Order Screenshots', key: 'order_ss', width: 25 }, 
+      { header: 'Review Screenshots', key: 'review_ss', width: 25 }, 
+      { header: 'Current Price', key: 'price', width: 9 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
 
