@@ -47,8 +47,14 @@ pool.connect()
     
     try {
       await client.query(`ALTER TABLE orders ADD COLUMN current_price NUMERIC(10, 2) DEFAULT 0.00;`);
-      console.log("Added current_price column to orders table.");
     } catch (e) {}
+    
+    // NEW: Auto add 'order_date' column
+    try {
+      await client.query(`ALTER TABLE orders ADD COLUMN order_date DATE;`);
+      console.log("Added order_date column to orders table.");
+    } catch (e) {}
+
     client.release();
     console.log('Production Database tables are ready!');
   })
@@ -94,22 +100,24 @@ app.post('/api/products', verifyAdmin, async (req, res) => {
   }
 });
 
-// 2. SUBMIT NEW ORDER API
+// 2. SUBMIT NEW ORDER API (UPDATED with order_date)
 app.post('/api/orders', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price } = req.body;
+    const { product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price, order_date } = req.body;
 
     const productCheck = await client.query('SELECT order_qty FROM products WHERE id = $1', [product_id]);
     if (productCheck.rows.length === 0 || productCheck.rows[0].order_qty <= 0) {
       throw new Error('Product is out of stock or not available');
     }
 
+    const finalOrderDate = order_date || new Date().toISOString().split('T')[0];
+
     const newOrder = await client.query(
-      `INSERT INTO orders (product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, status, current_price) 
-       VALUES ($1, $2, $3, $4, $5, 'pending', $6) RETURNING *`,
-      [product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price]
+      `INSERT INTO orders (product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, status, current_price, order_date) 
+       VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7) RETURNING *`,
+      [product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price, finalOrderDate]
     );
 
     await client.query(
@@ -147,7 +155,7 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4. EXPORT TO EXCEL API (FIXED IMAGE OVERLAPPING)
+// 4. EXPORT TO EXCEL API (UPDATED for order_date and auto #)
 app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   try {
     const { orderIds } = req.body;
@@ -158,7 +166,7 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
     const ordersToExport = await pool.query(
       `SELECT o.id, o.order_number, o.order_screenshot_1, o.order_screenshot_2, 
               o.review_screenshot_1, o.review_screenshot_2, o.paypal_email, 
-              o.created_at, o.current_price, p.product_price 
+              o.created_at, o.order_date, o.current_price, p.product_price 
        FROM orders o
        JOIN products p ON o.product_id = p.id
        WHERE o.id = ANY($1::int[])`, [orderIds]
@@ -172,8 +180,8 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
       { header: 'Order Number', key: 'order_number', width: 25 },
-      { header: 'Order Screenshots', key: 'order_ss', width: 50 }, // Width increased
-      { header: 'Review Screenshots', key: 'review_ss', width: 50 }, // Width increased
+      { header: 'Order Screenshots', key: 'order_ss', width: 50 }, 
+      { header: 'Review Screenshots', key: 'review_ss', width: 50 }, 
       { header: 'Current Price', key: 'price', width: 15 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
@@ -183,19 +191,23 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
       const currentRowIndex = i + 2; 
       
       const priceToDisplay = order.current_price !== null ? order.current_price : order.product_price;
+      
+      // Auto formatting date and Hash
+      const displayDate = order.order_date ? new Date(order.order_date).toLocaleDateString() : new Date(order.created_at).toLocaleDateString();
+      const cleanOrderNumber = order.order_number.replace(/^#+/, ''); // Removes any existing hashes to prevent ##
+      const finalOrderNumber = `#${cleanOrderNumber}`;
 
       worksheet.addRow({
-        date: new Date(order.created_at).toLocaleDateString(),
-        order_number: order.order_number,
+        date: displayDate,
+        order_number: finalOrderNumber,
         price: `$${priceToDisplay}`,
         paypal: order.paypal_email
       });
       worksheet.getRow(currentRowIndex).height = 130;
 
-      // FIXED: offsetCol is now fractional to stay inside the same cell
       const imagePlacements = [
-        { url: order.order_screenshot_1, colIndex: 3, offsetCol: 0.02 }, // Left side of the cell
-        { url: order.order_screenshot_2, colIndex: 3, offsetCol: 0.52 }, // Right side of the cell
+        { url: order.order_screenshot_1, colIndex: 3, offsetCol: 0.02 }, 
+        { url: order.order_screenshot_2, colIndex: 3, offsetCol: 0.52 }, 
         { url: order.review_screenshot_1, colIndex: 4, offsetCol: 0.02 },
         { url: order.review_screenshot_2, colIndex: 4, offsetCol: 0.52 }
       ];
@@ -207,7 +219,7 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
               tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.1 }, 
-              ext: { width: 140, height: 110 }, // Image width adjusted to fit side-by-side
+              ext: { width: 140, height: 110 },
               editAs: 'oneCell' 
             });
           }
@@ -238,7 +250,7 @@ app.put('/api/orders/mark-done', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4.6 UNDO ORDER API (NEW)
+// 4.6 UNDO ORDER API 
 app.put('/api/orders/:id/undo', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
