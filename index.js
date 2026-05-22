@@ -214,7 +214,7 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
             worksheet.addImage(imageId, {
               tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.1 }, 
               // ইমেজের সাইজ 140x110 থেকে পরিবর্তন করে 135x155 করা হয়েছে (লম্বায় বড়)
-              ext: { width: 135, height: 155 },
+              ext: { width: 130, height: 190 },
               editAs: 'oneCell' 
             });
           }
