@@ -172,11 +172,11 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
-      { header: 'Order Number', key: 'order_number', width: 20 },
+      { header: 'Order Number', key: 'order_number', width: 17 },
       // কলামের প্রস্থ (width) 50 থেকে কমিয়ে 40 করা হয়েছে যাতে ফাঁকা জায়গা কম থাকে
       { header: 'Order Screenshots', key: 'order_ss', width: 30 }, 
       { header: 'Review Screenshots', key: 'review_ss', width: 30 }, 
-      { header: 'Current Price', key: 'price', width: 15 },
+      { header: 'Price', key: 'price', width: 10 },
       { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
 
@@ -201,9 +201,9 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
       const imagePlacements = [
         { url: order.order_screenshot_1, colIndex: 3, offsetCol: 0.02 }, 
-        { url: order.order_screenshot_2, colIndex: 3, offsetCol: 0.52 }, 
+        { url: order.order_screenshot_2, colIndex: 3, offsetCol: 0.72 }, 
         { url: order.review_screenshot_1, colIndex: 4, offsetCol: 0.02 },
-        { url: order.review_screenshot_2, colIndex: 4, offsetCol: 0.52 }
+        { url: order.review_screenshot_2, colIndex: 4, offsetCol: 0.72 }
       ];
 
       for (const img of imagePlacements) {
@@ -212,9 +212,9 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
           if (imgData) {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
-              tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.1 }, 
+              tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.01 }, 
               // ইমেজের সাইজ 140x110 থেকে পরিবর্তন করে 135x155 করা হয়েছে (লম্বায় বড়)
-              ext: { width: 130, height: 190 },
+              ext: { width: 120, height: 200 },
               editAs: 'oneCell' 
             });
           }
