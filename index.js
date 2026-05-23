@@ -148,7 +148,7 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4. EXPORT TO EXCEL API (UPDATED HEIGHT & WIDTH)
+// 4. EXPORT ORDERS TO EXCEL API
 app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   try {
     const { orderIds } = req.body;
@@ -172,12 +172,11 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
-      { header: 'Order Number', key: 'order_number', width: 17 },
-      // কলামের প্রস্থ (width) 50 থেকে কমিয়ে 40 করা হয়েছে যাতে ফাঁকা জায়গা কম থাকে
+      { header: 'Order Number', key: 'order_number', width: 18 },
       { header: 'Order Screenshots', key: 'order_ss', width: 30 }, 
       { header: 'Review Screenshots', key: 'review_ss', width: 30 }, 
       { header: 'Price', key: 'price', width: 10 },
-      { header: 'PayPal Mail', key: 'paypal', width: 30 }
+      { header: 'PayPal Mail', key: 'paypal', width: 35 }
     ];
 
     for (let i = 0; i < ordersToExport.rows.length; i++) {
@@ -196,7 +195,6 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
         paypal: order.paypal_email
       });
       
-      // সারির উচ্চতা (Row Height) 130 থেকে বাড়িয়ে 170 করা হয়েছে
       worksheet.getRow(currentRowIndex).height = 170;
 
       const imagePlacements = [
@@ -213,8 +211,7 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
               tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.01 }, 
-              // ইমেজের সাইজ 140x110 থেকে পরিবর্তন করে 135x155 করা হয়েছে (লম্বায় বড়)
-              ext: { width: 120, height: 200 },
+              ext: { width: 120, height: 210 },
               editAs: 'oneCell' 
             });
           }
@@ -282,7 +279,93 @@ app.put('/api/products/:id', verifyAdmin, async (req, res) => {
   }
 });
 
-// 7. DELETE PRODUCT
+// 6.5 MARK PRODUCT AS COMPLETED (NEW API)
+app.put('/api/products/:id/complete', verifyAdmin, async (req, res) => {
+  try {
+    await pool.query(`UPDATE products SET status = 'completed' WHERE id = $1`, [req.params.id]);
+    res.status(200).json({ success: true, message: 'Product moved to completed inventory!' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
+// 6.6 EXPORT COMPLETED INVENTORY PRODUCTS (NEW API)
+app.post('/api/products/export', verifyAdmin, async (req, res) => {
+  try {
+    const { productIds } = req.body;
+    if (!productIds || productIds.length === 0) return res.status(400).json({ success: false, message: 'No products selected.' });
+
+    const productsToExport = await pool.query(`SELECT * FROM products WHERE id = ANY($1::int[])`, [productIds]);
+    const ordersData = await pool.query(`SELECT product_id, order_number FROM orders WHERE product_id = ANY($1::int[])`, [productIds]);
+
+    const workbook = new excelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Completed Inventory');
+
+    worksheet.columns = [
+      { header: 'Image', key: 'image', width: 20 },
+      { header: 'Store Name', key: 'store_name', width: 20 },
+      { header: 'Keyword', key: 'keyword', width: 30 },
+      { header: 'Product Link', key: 'product_link', width: 45 },
+      { header: 'Order Numbers', key: 'order_numbers', width: 20 }
+    ];
+
+    for (let i = 0; i < productsToExport.rows.length; i++) {
+      const prod = productsToExport.rows[i];
+      const currentRowIndex = i + 2;
+
+      // নির্দিষ্ট প্রোডাক্টের অর্ডার নাম্বারগুলো একসাথে করা
+      const prodOrders = ordersData.rows
+        .filter(o => o.product_id === prod.id)
+        .map(o => `#${o.order_number.replace(/^#+/, '')}`);
+      
+      const orderNumbersStr = prodOrders.join(', ');
+
+      worksheet.addRow({
+        store_name: prod.store_name,
+        keyword: prod.keyword,
+        product_link: prod.product_link,
+        order_numbers: orderNumbersStr || 'No orders found'
+      });
+      worksheet.getRow(currentRowIndex).height = 170;
+
+      if (prod.product_image && !prod.product_image.startsWith('blob:')) {
+        const imgData = await fetchImageBuffer(prod.product_image);
+        if (imgData) {
+          const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
+          worksheet.addImage(imageId, {
+            tl: { col: 0.05, row: currentRowIndex - 1 + 0.01 }, // সেলের মাঝ বরাবর বসানো
+            ext: { width: 120, height: 200 },
+            editAs: 'oneCell'
+          });
+        }
+      }
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=' + `Inventory_Export_${Date.now()}.xlsx`);
+    await workbook.xlsx.write(res);
+    res.status(200).end();
+
+  } catch (err) {
+    console.error('Export Error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to export excel.' });
+  }
+});
+
+// 6.7 BULK DELETE PRODUCTS (NEW API)
+app.post('/api/products/bulk-delete', verifyAdmin, async (req, res) => {
+  try {
+    const { productIds } = req.body;
+    if (!productIds || productIds.length === 0) return res.status(400).json({ success: false, message: 'No products selected.' });
+    // ON DELETE CASCADE থাকার কারণে ডাটাবেস থেকে অর্ডারগুলোও অটোমেটিক ডিলিট হয়ে যাবে
+    await pool.query(`DELETE FROM products WHERE id = ANY($1::int[])`, [productIds]);
+    res.status(200).json({ success: true, message: 'Selected products deleted.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
+// 7. DELETE INDIVIDUAL PRODUCT
 app.delete('/api/products/:id', verifyAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM products WHERE id = $1', [req.params.id]);
@@ -322,7 +405,7 @@ app.put('/api/orders/:id', verifyAdmin, async (req, res) => {
   }
 });
 
-// 9. DELETE ORDER
+// 9. DELETE INDIVIDUAL ORDER
 app.delete('/api/orders/:id', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
