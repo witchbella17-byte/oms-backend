@@ -7,7 +7,7 @@ const excelJS = require('exceljs');
 dotenv.config();
 const app = express();
 
-app.use(cors());
+app.use(cors({ origin: "*", credentials: true })); // Enable CORS for all origins
 app.use(express.json());
 
 const pool = new Pool({
