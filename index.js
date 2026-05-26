@@ -7,7 +7,7 @@ const excelJS = require('exceljs');
 dotenv.config();
 const app = express();
 
-app.use(cors({ origin: "*", credentials: true })); // Enable CORS for all origins
+app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json());
 
 const pool = new Pool({
@@ -40,6 +40,14 @@ pool.connect()
         review_screenshot_2 TEXT,
         paypal_email VARCHAR(100),
         status VARCHAR(50) DEFAULT 'pending', 
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS buyers_requests (
+        id SERIAL PRIMARY KEY,
+        product_id INT REFERENCES products(id) ON DELETE CASCADE,
+        buyer_name VARCHAR(255) NOT NULL,
+        status VARCHAR(50) DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `;
@@ -93,32 +101,39 @@ app.post('/api/products', verifyAdmin, async (req, res) => {
   }
 });
 
-// 2. SUBMIT NEW ORDER API
+// 2. SUBMIT NEW ORDER API (UPDATED WITH AUTOMATIC BR INVALIDATION & PROTECTION)
 app.post('/api/orders', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price, order_date } = req.body;
 
-    const productCheck = await client.query('SELECT order_qty FROM products WHERE id = $1', [product_id]);
-    if (productCheck.rows.length === 0 || productCheck.rows[0].order_qty <= 0) {
-      throw new Error('Product is out of stock or not available');
+    // Smart check: Dekhi eitar kono active Buyer Request ache kina
+    const brCheck = await client.query(
+      `SELECT id FROM buyers_requests WHERE product_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1`,
+      [product_id]
+    );
+
+    if (brCheck.rows.length > 0) {
+      // Jodi request thake, seta vanished/invalid hobe, kinu inventory qty abar minus hobena
+      await client.query(`UPDATE buyers_requests SET status = 'invalid' WHERE id = $1`, [brCheck.rows[0].id]);
+    } else {
+      // Jodi buyer request na thake (direct order), tobe normally stock validation & minus hobe
+      const productCheck = await client.query('SELECT order_qty FROM products WHERE id = $1', [product_id]);
+      if (productCheck.rows.length === 0 || productCheck.rows[0].order_qty <= 0) {
+        throw new Error('Product is out of stock or not available');
+      }
+      await client.query(
+        `UPDATE products SET order_qty = order_qty - 1, status = CASE WHEN order_qty - 1 <= 0 THEN 'not_available' ELSE status END WHERE id = $1`,
+        [product_id]
+      );
     }
 
     const finalOrderDate = order_date || new Date().toISOString().split('T')[0];
-
     const newOrder = await client.query(
       `INSERT INTO orders (product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, status, current_price, order_date) 
        VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7) RETURNING *`,
       [product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price, finalOrderDate]
-    );
-
-    await client.query(
-      `UPDATE products 
-       SET order_qty = order_qty - 1, 
-           status = CASE WHEN order_qty - 1 <= 0 THEN 'not_available' ELSE status END
-       WHERE id = $1`,
-      [product_id]
     );
 
     await client.query('COMMIT');
@@ -148,7 +163,7 @@ app.put('/api/orders/:id/review', verifyAdmin, async (req, res) => {
   }
 });
 
-// 4. EXPORT ORDERS TO EXCEL API
+// 4. EXPORT TO EXCEL API
 app.post('/api/orders/export', verifyAdmin, async (req, res) => {
   try {
     const { orderIds } = req.body;
@@ -172,11 +187,11 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
     worksheet.columns = [
       { header: 'Date', key: 'date', width: 15 },
-      { header: 'Order Number', key: 'order_number', width: 18 },
-      { header: 'Order Screenshots', key: 'order_ss', width: 30 }, 
-      { header: 'Review Screenshots', key: 'review_ss', width: 30 }, 
-      { header: 'Price', key: 'price', width: 10 },
-      { header: 'PayPal Mail', key: 'paypal', width: 35 }
+      { header: 'Order Number', key: 'order_number', width: 20 },
+      { header: 'Order Screenshots', key: 'order_ss', width: 40 }, 
+      { header: 'Review Screenshots', key: 'review_ss', width: 40 }, 
+      { header: 'Price', key: 'price', width: 15 },
+      { header: 'PayPal Mail', key: 'paypal', width: 30 }
     ];
 
     for (let i = 0; i < ordersToExport.rows.length; i++) {
@@ -199,9 +214,9 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
 
       const imagePlacements = [
         { url: order.order_screenshot_1, colIndex: 3, offsetCol: 0.02 }, 
-        { url: order.order_screenshot_2, colIndex: 3, offsetCol: 0.72 }, 
+        { url: order.order_screenshot_2, colIndex: 3, offsetCol: 0.52 }, 
         { url: order.review_screenshot_1, colIndex: 4, offsetCol: 0.02 },
-        { url: order.review_screenshot_2, colIndex: 4, offsetCol: 0.72 }
+        { url: order.review_screenshot_2, colIndex: 4, offsetCol: 0.52 }
       ];
 
       for (const img of imagePlacements) {
@@ -210,8 +225,8 @@ app.post('/api/orders/export', verifyAdmin, async (req, res) => {
           if (imgData) {
             const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
             worksheet.addImage(imageId, {
-              tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.01 }, 
-              ext: { width: 120, height: 210 },
+              tl: { col: img.colIndex - 1 + img.offsetCol, row: currentRowIndex - 1 + 0.02 }, 
+              ext: { width: 135, height: 155 },
               editAs: 'oneCell' 
             });
           }
@@ -279,7 +294,7 @@ app.put('/api/products/:id', verifyAdmin, async (req, res) => {
   }
 });
 
-// 6.5 MARK PRODUCT AS COMPLETED (NEW API)
+// 6.5 MARK PRODUCT AS COMPLETED
 app.put('/api/products/:id/complete', verifyAdmin, async (req, res) => {
   try {
     await pool.query(`UPDATE products SET status = 'completed' WHERE id = $1`, [req.params.id]);
@@ -289,7 +304,7 @@ app.put('/api/products/:id/complete', verifyAdmin, async (req, res) => {
   }
 });
 
-// 6.6 EXPORT COMPLETED INVENTORY PRODUCTS (NEW API)
+// 6.6 EXPORT COMPLETED INVENTORY PRODUCTS
 app.post('/api/products/export', verifyAdmin, async (req, res) => {
   try {
     const { productIds } = req.body;
@@ -302,18 +317,17 @@ app.post('/api/products/export', verifyAdmin, async (req, res) => {
     const worksheet = workbook.addWorksheet('Completed Inventory');
 
     worksheet.columns = [
-      { header: 'Image', key: 'image', width: 20 },
-      { header: 'Store Name', key: 'store_name', width: 20 },
+      { header: 'Image', key: 'image', width: 25 },
+      { header: 'Store Name', key: 'store_name', width: 25 },
       { header: 'Keyword', key: 'keyword', width: 30 },
       { header: 'Product Link', key: 'product_link', width: 45 },
-      { header: 'Order Numbers', key: 'order_numbers', width: 20 }
+      { header: 'Order Numbers', key: 'order_numbers', width: 50 }
     ];
 
     for (let i = 0; i < productsToExport.rows.length; i++) {
       const prod = productsToExport.rows[i];
       const currentRowIndex = i + 2;
 
-      // নির্দিষ্ট প্রোডাক্টের অর্ডার নাম্বারগুলো একসাথে করা
       const prodOrders = ordersData.rows
         .filter(o => o.product_id === prod.id)
         .map(o => `#${o.order_number.replace(/^#+/, '')}`);
@@ -326,15 +340,15 @@ app.post('/api/products/export', verifyAdmin, async (req, res) => {
         product_link: prod.product_link,
         order_numbers: orderNumbersStr || 'No orders found'
       });
-      worksheet.getRow(currentRowIndex).height = 170;
+      worksheet.getRow(currentRowIndex).height = 110;
 
       if (prod.product_image && !prod.product_image.startsWith('blob:')) {
         const imgData = await fetchImageBuffer(prod.product_image);
         if (imgData) {
           const imageId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
           worksheet.addImage(imageId, {
-            tl: { col: 0.05, row: currentRowIndex - 1 + 0.01 }, // সেলের মাঝ বরাবর বসানো
-            ext: { width: 120, height: 200 },
+            tl: { col: 0.05, row: currentRowIndex - 1 + 0.05 }, 
+            ext: { width: 120, height: 120 },
             editAs: 'oneCell'
           });
         }
@@ -352,12 +366,11 @@ app.post('/api/products/export', verifyAdmin, async (req, res) => {
   }
 });
 
-// 6.7 BULK DELETE PRODUCTS (NEW API)
+// 6.7 BULK DELETE PRODUCTS
 app.post('/api/products/bulk-delete', verifyAdmin, async (req, res) => {
   try {
     const { productIds } = req.body;
     if (!productIds || productIds.length === 0) return res.status(400).json({ success: false, message: 'No products selected.' });
-    // ON DELETE CASCADE থাকার কারণে ডাটাবেস থেকে অর্ডারগুলোও অটোমেটিক ডিলিট হয়ে যাবে
     await pool.query(`DELETE FROM products WHERE id = ANY($1::int[])`, [productIds]);
     res.status(200).json({ success: true, message: 'Selected products deleted.' });
   } catch (err) {
@@ -365,7 +378,86 @@ app.post('/api/products/bulk-delete', verifyAdmin, async (req, res) => {
   }
 });
 
-// 7. DELETE INDIVIDUAL PRODUCT
+// ==========================================
+// NEW FEATURES: BUYER REQUEST (BR) APIs
+// ==========================================
+
+// A. CREATE BUYER REQUEST & MINUS QUANTITY
+app.post('/api/buyers-requests', verifyAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { product_id, buyer_name } = req.body;
+
+    const prodCheck = await client.query('SELECT order_qty, status FROM products WHERE id = $1', [product_id]);
+    if (prodCheck.rows.length === 0 || prodCheck.rows[0].order_qty <= 0) {
+      throw new Error('Product is out of stock or not available');
+    }
+
+    await client.query(
+      `INSERT INTO buyers_requests (product_id, buyer_name, status) VALUES ($1, $2, 'active')`,
+      [product_id, buyer_name]
+    );
+
+    await client.query(
+      `UPDATE products SET order_qty = order_qty - 1, status = CASE WHEN order_qty - 1 <= 0 THEN 'not_available' ELSE status END WHERE id = $1`,
+      [product_id]
+    );
+
+    await client.query('COMMIT');
+    res.status(201).json({ success: true, message: 'Buyer Request created successfully!' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ success: false, message: err.message });
+  } {
+    client.release();
+  }
+});
+
+// B. GET ALL ACTIVE BUYERS REQUESTS
+app.get('/api/buyers-requests', verifyAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT br.*, p.store_name, p.keyword, p.product_image 
+       FROM buyers_requests br
+       JOIN products p ON br.product_id = p.id
+       WHERE br.status = 'active'
+       ORDER BY br.created_at DESC`
+    );
+    res.status(200).json({ success: true, requests: result.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server Error' });
+  }
+});
+
+// C. DELETE BUYER REQUEST & RESTORE QUANTITY (+1)
+app.delete('/api/buyers-requests/:id', verifyAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const brData = await client.query('SELECT product_id, status FROM buyers_requests WHERE id = $1', [req.params.id]);
+    if (brData.rows.length === 0) throw new Error('Request not found');
+
+    await client.query('DELETE FROM buyers_requests WHERE id = $1', [req.params.id]);
+
+    if (brData.rows[0].status === 'active') {
+      await client.query(
+        `UPDATE products SET order_qty = order_qty + 1, status = 'available' WHERE id = $1`,
+        [brData.rows[0].product_id]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({ success: true, message: 'Request deleted and inventory restored!' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(400).json({ success: false, message: err.message });
+  } {
+    client.release();
+  }
+});
+
+// 7. DELETE PRODUCT
 app.delete('/api/products/:id', verifyAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM products WHERE id = $1', [req.params.id]);
@@ -405,7 +497,7 @@ app.put('/api/orders/:id', verifyAdmin, async (req, res) => {
   }
 });
 
-// 9. DELETE INDIVIDUAL ORDER
+// 9. DELETE ORDER
 app.delete('/api/orders/:id', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
