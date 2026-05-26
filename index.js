@@ -101,24 +101,19 @@ app.post('/api/products', verifyAdmin, async (req, res) => {
   }
 });
 
-// 2. SUBMIT NEW ORDER API (UPDATED WITH AUTOMATIC BR INVALIDATION & PROTECTION)
+// 2. SUBMIT NEW ORDER API (MANUAL BR SELECTION)
 app.post('/api/orders', verifyAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price, order_date } = req.body;
+    const { product_id, order_number, order_screenshot_1, order_screenshot_2, paypal_email, current_price, order_date, buyer_request_id } = req.body;
 
-    // Smart check: Dekhi eitar kono active Buyer Request ache kina
-    const brCheck = await client.query(
-      `SELECT id FROM buyers_requests WHERE product_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1`,
-      [product_id]
-    );
-
-    if (brCheck.rows.length > 0) {
-      // Jodi request thake, seta vanished/invalid hobe, kinu inventory qty abar minus hobena
-      await client.query(`UPDATE buyers_requests SET status = 'invalid' WHERE id = $1`, [brCheck.rows[0].id]);
+    if (buyer_request_id) {
+      // যদি আপনি ড্রপডাউন থেকে বায়ার রিকুয়েস্ট সিলেক্ট করে থাকেন
+      await client.query(`UPDATE buyers_requests SET status = 'invalid' WHERE id = $1`, [buyer_request_id]);
+      // দ্রষ্টব্য: এখানে ইনভেন্টরি থেকে মাইনাস হবে না, কারণ BR তৈরির সময়ই মাইনাস হয়ে গিয়েছিল।
     } else {
-      // Jodi buyer request na thake (direct order), tobe normally stock validation & minus hobe
+      // যদি আপনি ড্রপডাউন থেকে কোনো বায়ার সিলেক্ট না করেন (ডাইরেক্ট অর্ডার)
       const productCheck = await client.query('SELECT order_qty FROM products WHERE id = $1', [product_id]);
       if (productCheck.rows.length === 0 || productCheck.rows[0].order_qty <= 0) {
         throw new Error('Product is out of stock or not available');
