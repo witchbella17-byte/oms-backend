@@ -476,13 +476,13 @@ app.get('/api/orders', verifyAdmin, async (req, res) => {
 app.put('/api/orders/:id', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { order_number, paypal_email, current_price, order_date, order_screenshot_1, order_screenshot_2 } = req.body;
+    const { order_number, paypal_email, current_price, order_date, order_screenshot_1, order_screenshot_2, review_screenshot_1, review_screenshot_2 } = req.body;
     
     const updatedOrder = await pool.query(
       `UPDATE orders 
-       SET order_number=$1, paypal_email=$2, current_price=$3, order_date=$4, order_screenshot_1=$5, order_screenshot_2=$6 
-       WHERE id=$7 RETURNING *`,
-      [order_number, paypal_email, current_price, order_date, order_screenshot_1, order_screenshot_2, id]
+       SET order_number=$1, paypal_email=$2, current_price=$3, order_date=$4, order_screenshot_1=$5, order_screenshot_2=$6, review_screenshot_1=$7, review_screenshot_2=$8 
+       WHERE id=$9 RETURNING *`,
+      [order_number, paypal_email, current_price, order_date, order_screenshot_1, order_screenshot_2, review_screenshot_1, review_screenshot_2, id]
     );
     
     if (updatedOrder.rows.length === 0) return res.status(404).json({ success: false, message: 'Order not found' });
